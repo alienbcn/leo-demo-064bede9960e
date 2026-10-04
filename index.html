@@ -1,0 +1,45 @@
+<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Leo - demo de voz NOVOMART</title>
+<style>body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0b0b0b;color:#e8d9a8;font-family:system-ui,sans-serif;text-align:center}
+.w{max-width:420px;padding:24px}h1{font-weight:600;font-size:26px;margin:0 0 6px}p{color:#b9ad85;margin:6px 0 22px;font-size:15px}
+button{background:#d4af37;color:#111;border:0;border-radius:999px;padding:18px 36px;font-size:18px;font-weight:600;cursor:pointer}
+button.stop{background:#8a2a2a;color:#fff}#st{margin-top:18px;font-size:16px;min-height:22px;color:#f1e6bd}#lat,#cd{font-size:13px;color:#8d8362;margin-top:6px}
+#mic{height:8px;width:200px;background:#222;border-radius:4px;margin:16px auto 0;overflow:hidden;display:none}#mic i{display:block;height:100%;width:0;background:#d4af37}</style></head><body><div class="w">
+<h1>Leo</h1><p>Demo de voz (OpenAI Realtime, voz Cedar). Pulsa y habla en español. Sesión máx. 4 minutos. Mejor con auriculares.</p>
+<button id="b">Hablar con Leo</button><div id="st"></div><div id="mic"><i></i></div><div id="cd"></div><div id="lat"></div></div><audio id="a" autoplay playsinline></audio>
+<script>
+const NAME='Leo',b=document.getElementById('b'),st=document.getElementById('st'),lat=document.getElementById('lat'),cd=document.getElementById('cd'),au=document.getElementById('a'),mic=document.getElementById('mic'),mi=mic.firstChild;
+let pc,dc,stream,timer,tick,nudge,actx,tStop=0,on=false,t0=0,speaking=false;const TEST=location.search.includes('test=1');
+function end(m){on=false;clearTimeout(timer);clearInterval(tick);clearTimeout(nudge);try{dc&&dc.close()}catch(e){}try{pc&&pc.close()}catch(e){}try{stream&&stream.getTracks().forEach(t=>t.stop())}catch(e){}try{actx&&actx.close()}catch(e){}b.disabled=false;b.textContent='Hablar con '+NAME;b.className='';mic.style.display='none';cd.textContent='';st.textContent=m||''}
+function arm(){clearTimeout(nudge);nudge=setTimeout(()=>{if(on&&dc&&dc.readyState==='open'&&!speaking)dc.send(JSON.stringify({type:'response.create',response:{instructions:'La persona no ha dicho nada. Di una sola frase corta en español preguntando si te oye.'}}))},9000)}
+async function start(){b.disabled=true;st.textContent='Conectando...';
+try{
+ actx=new (window.AudioContext||window.webkitAudioContext)();try{await actx.resume()}catch(e){}
+ au.play&&au.play().catch(()=>{});
+ if(TEST){const d=actx.createMediaStreamDestination();stream=d.stream}else{
+  if(!navigator.mediaDevices)throw new Error('este navegador no permite micrófono (usa Chrome o Safari con https)');
+  try{stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true}})}catch(e){throw new Error('no hay permiso de micrófono. Actívalo en el candado de la barra de direcciones y vuelve a pulsar.')}}
+ try{const an=actx.createAnalyser();actx.createMediaStreamSource(stream).connect(an);const buf=new Uint8Array(an.fftSize);mic.style.display='block';(function lv(){if(!actx||actx.state==='closed')return;an.getByteTimeDomainData(buf);let m=0;for(const v of buf)m=Math.max(m,Math.abs(v-128));mi.style.width=Math.min(100,m*2.2)+'%';requestAnimationFrame(lv)})()}catch(e){}
+ const r=await fetch('https://gujqbnunbublysaxcfks.supabase.co/functions/v1/openai_realtime_token?k=064bede9960e&v=leo',{method:'POST'});const j=await r.json();if(!j.value)throw new Error('token: '+JSON.stringify(j).slice(0,120));
+ pc=new RTCPeerConnection();pc.ontrack=e=>{au.srcObject=e.streams[0];window.__track=true;au.play&&au.play().catch(()=>{st.textContent='Toca la pantalla para activar el sonido'})};
+ pc.onconnectionstatechange=()=>{window.__ev&&window.__ev.push('pc:'+pc.connectionState);if(on&&(pc.connectionState==='failed'||pc.connectionState==='disconnected'))end('Se cortó la conexión. Pulsa para volver a llamar.')};
+ stream.getTracks().forEach(t=>pc.addTrack(t,stream));
+ dc=pc.createDataChannel('oai-events');window.__ev=[];
+ dc.onopen=()=>{st.textContent=NAME+' está contestando...';dc.send(JSON.stringify({type:'response.create',response:{instructions:'Saluda en español con una frase corta: Hola, soy Leo, de NOVOMART Trades. ¿En qué te puedo ayudar?'}}))};
+ dc.onclose=()=>{if(on)end('Llamada terminada. Pulsa para volver a llamar.')};
+ dc.onmessage=m=>{let e;try{e=JSON.parse(m.data)}catch(x){return}window.__ev.push(e.type+(e.transcript?':'+e.transcript:''));
+  if(e.type==='input_audio_buffer.speech_started'){st.textContent='Te escucho...';clearTimeout(nudge)}
+  if(e.type==='input_audio_buffer.speech_stopped'){tStop=performance.now();st.textContent='Pensando...'}
+  if(e.type==='response.created'){speaking=true}
+  if(e.type==='output_audio_buffer.started'){st.textContent=NAME+' habla...'}
+  if(e.type==='response.done'||e.type==='output_audio_buffer.stopped'){speaking=false;st.textContent='Te toca: habla cuando quieras.';arm()}
+  if(e.type==='error'){st.textContent='Error: '+((e.error&&e.error.message)||'desconocido')}
+  if(e.type==='response.output_audio.delta'&&tStop){lat.textContent='Latencia (fin de tu frase a primer audio): '+Math.round(performance.now()-tStop)+' ms';tStop=0}};
+ const o=await pc.createOffer();await pc.setLocalDescription(o);
+ const s=await fetch('https://api.openai.com/v1/realtime/calls',{method:'POST',body:o.sdp,headers:{Authorization:'Bearer '+j.value,'Content-Type':'application/sdp'}});
+ if(!s.ok)throw new Error('sdp '+s.status);await pc.setRemoteDescription({type:'answer',sdp:await s.text()});
+ on=true;t0=Date.now();b.disabled=false;b.textContent='Colgar';b.className='stop';
+ tick=setInterval(()=>{const l=240-Math.round((Date.now()-t0)/1000);cd.textContent='Tiempo restante: '+Math.floor(l/60)+':'+String(Math.max(0,l)%60).padStart(2,'0');if(l<=0)end('Sesión terminada (límite 4 min). Pulsa para volver a llamar.')},1000);
+}catch(e){end('Error: '+e.message)}}
+b.onclick=()=>{if(on)end('Llamada terminada.');else start()};
+document.body.addEventListener('click',()=>{au.play&&au.paused&&au.srcObject&&au.play().catch(()=>{})});
+</script></body></html>
